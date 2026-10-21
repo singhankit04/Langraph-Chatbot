@@ -1,13 +1,12 @@
 import { StateGraph, MessagesAnnotation, START, END, MemorySaver } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { ChatGroq } from "@langchain/groq";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatOpenRouter } from "@langchain/openrouter";
 import { TavilySearch } from "@langchain/tavily";
 import { tool } from "@langchain/core/tools";
 import "dotenv/config";
 
-if (!process.env.GROQ_API_KEY) {
-  console.error("❌ Error: GROQ_API_KEY is not defined in backend/.env");
-}
 
 let searchTool;
 if (process.env.TAVILY_API_KEY?.trim()) {
@@ -43,16 +42,38 @@ if (process.env.TAVILY_API_KEY?.trim()) {
 
 const tools = [searchTool];
 
-const llm = new ChatGroq({
+
+
+const groq = new ChatGroq({
   apiKey: process.env.GROQ_API_KEY,
-  model: "llama-3.3-70b-versatile",
-  temperature: 0.7,
+  model: "openai/gpt-oss-120b",
 });
 
-const modelWithTools = llm.bindTools(tools);
+const gemini = new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  model: "gemini-3.5-flash-lite",
+});
+
+const openrouter = new ChatOpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  model: "nvidia/nemotron-3.5-lightning:free",
+});
+
+
+// const llm =gemini.bindTools(tools)
+
+const llm = groq.bindTools(tools).withFallbacks({
+  fallbacks: [
+    gemini.bindTools(tools),
+    openrouter.bindTools(tools),
+  ],
+});
+
+
+
 
 async function chatbotAgentNode(state) {
-  const response = await modelWithTools.invoke(state.messages);
+  const response = await llm.invoke(state.messages);
   // MessagesAnnotation reducer automatically appends returned messages to state history
   return { messages: [response] };
 }
