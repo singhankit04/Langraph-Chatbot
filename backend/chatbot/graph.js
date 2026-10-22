@@ -1,76 +1,11 @@
 import { StateGraph, MessagesAnnotation, START, END, MemorySaver } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
-import { ChatGroq } from "@langchain/groq";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatOpenRouter } from "@langchain/openrouter";
-import { TavilySearch } from "@langchain/tavily";
-import { tool } from "@langchain/core/tools";
+import { getChatModelWithFallbacks } from "../models/llm.js";
+import { tools } from "../utils/tools.js";
 import "dotenv/config";
 
-
-let searchTool;
-if (process.env.TAVILY_API_KEY?.trim()) {
-  searchTool = new TavilySearch({
-    searchDepth: "advanced",
-    topic: "general",
-    maxResults: 3,
-    timeRange: "day",
-    includeRawContent: false,
-  includeImages: false,
-  includeImageDescriptions: false,
-    apiKey: process.env.TAVILY_API_KEY.trim(),
-  });
-} else {
-  // Mock fallback to allow offline testing when TAVILY_API_KEY is not configured
-  searchTool = tool(
-    async ({ query }) => {
-      return `[Notice: TAVILY_API_KEY missing in .env. Query: "${query}"]`;
-    },
-    {
-      name: "tavily_search",
-      description: "Search the web for current information or recent news.",
-      schema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search query" },
-        },
-        required: ["query"],
-      },
-    }
-  );
-}
-
-const tools = [searchTool];
-
-
-
-const groq = new ChatGroq({
-  apiKey: process.env.GROQ_API_KEY,
-  model: "openai/gpt-oss-120b",
-});
-
-const gemini = new ChatGoogleGenerativeAI({
-  apiKey: process.env.GOOGLE_API_KEY,
-  model: "gemini-3.5-flash-lite",
-});
-
-const openrouter = new ChatOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  model: "nvidia/nemotron-3.5-lightning:free",
-});
-
-
-// const llm =gemini.bindTools(tools)
-
-const llm = groq.bindTools(tools).withFallbacks({
-  fallbacks: [
-    gemini.bindTools(tools),
-    openrouter.bindTools(tools),
-  ],
-});
-
-
-
+// Bind configured tools (e.g. Tavily search) to LLM with fallback chain (Groq -> Gemini -> OpenRouter)
+const llm = getChatModelWithFallbacks(tools);
 
 async function chatbotAgentNode(state) {
   const response = await llm.invoke(state.messages);
@@ -109,3 +44,5 @@ export const checkpointer = new MemorySaver();
 export const chatbotApp = workflow.compile({
   checkpointer,
 });
+
+export default chatbotApp;
