@@ -1,12 +1,7 @@
 import express from "express";
 import cors from "cors";
-import { upload, uploadDisk } from "./utils/multer.js";
-import {
-  uploadPdfHandler,
-  queuePdfHandler,
-  getPdfJobStatusHandler,
-} from "./controllers/pdfController.js";
-import { chatHandler } from "./controllers/chatController.js";
+import { upload } from "./utils/multer.js";
+import { chatHandler, uploadPdfHandler } from "./controllers/chatController.js";
 
 const app = express();
 
@@ -19,7 +14,7 @@ app.use(express.urlencoded({ extended: true }));
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    message: "API service is active",
+    message: "LangGraph RAG & Agentic Chatbot API is active",
   });
 });
 
@@ -31,19 +26,15 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// --- API Entrypoints ---
+// --- Chat Session Endpoints (Isolated by :chatId) ---
 
-// 1. PDF Upload (Synchronous: in-memory buffer)
-app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
+// 1. Post chat message to a session (RAG + Chatbot with isolated memory)
+app.post("/api/chat/:chatId", chatHandler);
+app.post("/api/chat", chatHandler); // Fallback if client omits chatId
 
-// 2. PDF Upload via Queue (Asynchronous: disk storage in backend/uploads/ + BullMQ worker)
-app.post("/api/upload-pdf/queue", uploadDisk.single("pdf"), queuePdfHandler);
-
-// 3. Queue Job Status Polling
-app.get("/api/upload-status/:jobId", getPdfJobStatusHandler);
-
-// 4. Chat / Query Ingestion
-app.post("/api/chat", chatHandler);
+// 2. Upload PDF into a session (chunks tagged with chatId in Qdrant)
+app.post("/api/chat/:chatId/upload", upload.single("pdf"), uploadPdfHandler);
+app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler); // Backwards compatibility fallback
 
 // 404 Route Handler
 app.use((req, res) => {

@@ -1,26 +1,9 @@
+# ==============================================================================
+# Dependencies (Frontend & Backend)
+# ==============================================================================
 node_modules/
-uploads/
-.env
-.env.*
-!.env.example
-
-# Logs
-*.log
-npm-debug.log*
-
-# OS / Editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-todonext.txt
-
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
+**/node_modules/
+.pnp
 .pnp.*
 .yarn/*
 !.yarn/patches
@@ -28,32 +11,114 @@ todonext.txt
 !.yarn/releases
 !.yarn/versions
 
-# testing
-coverage/
+# ==============================================================================
+# Environment & Secrets (Never commit API keys or credentials)
+# ==============================================================================
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+!.env.example
+!**/.env.example
 
-# next.js
+# ==============================================================================
+# Backend: Uploads & Temporary Process Files
+# ==============================================================================
+backend/uploads/*
+uploads/*
+!backend/uploads/.gitkeep
+!uploads/.gitkeep
+
+# ==============================================================================
+# Frontend: Next.js & Build Outputs
+# ==============================================================================
 .next/
+**/.next/
+frontend/.next/
 out/
-
-# production
+**/out/
+frontend/out/
 build/
+**/build/
+dist/
+**/dist/
+.turbo/
+**/.turbo/
+frontend/.turbo/
 
-# misc
-.DS_Store
-*.pem
+# ==============================================================================
+# Frontend: Vercel & Deployment
+# ==============================================================================
+.vercel
+**/.vercel
+frontend/.vercel/
 
-# debug
+# ==============================================================================
+# Frontend: TypeScript & Framework Types
+# ==============================================================================
+*.tsbuildinfo
+next-env.d.ts
+frontend/next-env.d.ts
+
+# ==============================================================================
+# Frontend: Agent & Skills Workspace Files
+# ==============================================================================
+.agents/
+**/.agents/
+frontend/.agents/
+skills-lock.json
+**/skills-lock.json
+frontend/skills-lock.json
+
+# ==============================================================================
+# Logs & Debugging
+# ==============================================================================
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# ==============================================================================
+# Testing & Coverage
+# ==============================================================================
+coverage/
+*.lcov
+.nyc_output
 
-# vercel
-.vercel
+# ==============================================================================
+# Local Working & Scratch Files
+# ==============================================================================
+.taste-skill/
+**/.taste-skill/
+todonext.txt
+test.js
+scratch/
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ==============================================================================
+# OS & Editor Files
+# ==============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

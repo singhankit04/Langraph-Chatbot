@@ -2,14 +2,11 @@
   "name": "langraph-rag-chatbot",
   "version": "1.0.0",
   "description": "LangGraph RAG & Agentic Chatbot",
-  "main": "chatbot/index.js",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node chatbot/index.js",
-    "dev": "npx nodemon server.js",
-    "bot": "node chatbot/index.js",
-    "rag": "node rag/index.js",
-    "worker": "node queue/worker.js"
+    "start": "node server.js",
+    "dev": "npx nodemon server.js"
   },
   "keywords": [],
   "author": "",
