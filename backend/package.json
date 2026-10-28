@@ -1,7 +1,7 @@
 {
-  "name": "langraph-rag-chatbot",
+  "name": "eideticai-backend",
   "version": "1.0.0",
-  "description": "LangGraph RAG & Agentic Chatbot",
+  "description": "EideticAI - Agentic RAG & Enterprise Knowledge Chatbot Backend",
   "main": "server.js",
   "type": "module",
   "scripts": {

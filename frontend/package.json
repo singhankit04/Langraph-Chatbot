@@ -1,6 +1,7 @@
 {
-  "name": "frontend",
+  "name": "eideticai",
   "version": "0.1.0",
+  "description": "EideticAI - AI Knowledge Management & Enterprise Search Platform",
   "private": true,
   "scripts": {
     "dev": "next dev",

@@ -63,7 +63,7 @@ export async function checkConnections() {
     const names = (response.collections || []).map((c) => c.name);
     console.log(`  ✅ Qdrant: Connected successfully (collections: [${names.join(", ")}])`);
 
-    // Ensure metadata.chatId payload index exists for session-isolated filtering
+    // Ensure metadata.chatId and metadata.conversationId payload indices exist for session-isolated filtering
     if (names.includes(DEFAULT_COLLECTION_NAME)) {
       try {
         await qdrantClient.createPayloadIndex(DEFAULT_COLLECTION_NAME, {
@@ -71,6 +71,16 @@ export async function checkConnections() {
           field_schema: "keyword",
         });
         console.log(`  ✅ Qdrant: "metadata.chatId" keyword index verified`);
+      } catch (idxErr) {
+        // Ignore if index already exists
+      }
+
+      try {
+        await qdrantClient.createPayloadIndex(DEFAULT_COLLECTION_NAME, {
+          field_name: "metadata.conversationId",
+          field_schema: "keyword",
+        });
+        console.log(`  ✅ Qdrant: "metadata.conversationId" keyword index verified`);
       } catch (idxErr) {
         // Ignore if index already exists
       }

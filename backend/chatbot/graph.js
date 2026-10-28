@@ -1,5 +1,6 @@
 import { StateGraph, MessagesAnnotation, START, END, MemorySaver } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { SystemMessage } from "@langchain/core/messages";
 import { getChatModelWithFallbacks } from "../models/llm.js";
 import { tools } from "../utils/tools.js";
 import "dotenv/config";
@@ -7,36 +8,58 @@ import "dotenv/config";
 // Bind configured tools (e.g. Tavily search) to LLM with fallback chain (Groq -> Gemini -> OpenRouter)
 const llm = getChatModelWithFallbacks(tools);
 
+const defaultSystemMessage = new SystemMessage(
+  "You are EideticAI, an advanced AI enterprise knowledge and research assistant powered by LangGraph.\n" +
+  "You maintain conversation context across turns using session checkpoints.\n\n" +
+  "CORE TOOL USAGE RULES:\n" +
+  "1. Normal Chat & Logic: For greetings, chit-chat, conversational follow-ups, user preferences (e.g. 'call me Don'), general questions, math, programming, or everyday conversation, ALWAYS answer directly WITHOUT using any tools.\n" +
+  "2. Document Retrieval (RAG): ONLY call 'search_uploaded_documents' when the user explicitly asks a question regarding their uploaded files, PDFs, reports, or policies. Do NOT call this tool for normal conversation or unrelated follow-ups.\n" +
+  "3. Live Web Search: For real-time news, today's events, or web data, call 'tavily_search'.\n\n" +
+  "STRICT OUTPUT STRUCTURE & FORMATTING RULES:\n" +
+  "- NEVER output raw markdown tables with vertical pipe characters (do NOT output '| Section | Points |' or '|---|---|').\n" +
+  "- Avoid excessive double asterisks (**) and avoid wrapping entire paragraphs or headers in asterisks.\n" +
+  "- Structure document summaries and answers with clean, professional sections:\n" +
+  "  • Executive Overview: A concise 1-2 sentence high-level summary.\n" +
+  "  • Key Takeaways / Points: Clean bullet points (•) describing core points in clear natural language.\n" +
+  "  • Citations: Include document and page references naturally at the end (e.g., '(Page 2)').\n" +
+  "- Keep the layout clean, readable, well-spaced, and comfortable for human readers."
+);
+
 async function chatbotAgentNode(state) {
-  const response = await llm.invoke(state.messages);
+  const hasSystemMessage = state.messages.length > 0 && state.messages[0]._getType?.() === "system";
+  const messagesToSend = hasSystemMessage
+    ? state.messages
+    : [defaultSystemMessage, ...state.messages];
+
+  const response = await llm.invoke(messagesToSend);
   // MessagesAnnotation reducer automatically appends returned messages to state history
   return { messages: [response] };
 }
 
-const webSearchToolNode = new ToolNode(tools);
+const toolNode = new ToolNode(tools);
 
 function routeAgentDecision(state) {
   const lastMessage = state.messages[state.messages.length - 1];
-  // Route to search tool if model generated tool calls, otherwise finish
+  // Route to tool executor if model requested tool calls, otherwise finish
   if (lastMessage?.tool_calls?.length > 0) {
-    return "call_web_search";
+    return "call_tools";
   }
   return "finish_turn";
 }
 
 const workflow = new StateGraph(MessagesAnnotation)
   .addNode("chatbot_agent", chatbotAgentNode)
-  .addNode("web_search_tool", webSearchToolNode)
+  .addNode("tools", toolNode)
   .addEdge(START, "chatbot_agent")
   .addConditionalEdges(
     "chatbot_agent",
     routeAgentDecision,
     {
-      call_web_search: "web_search_tool",
+      call_tools: "tools",
       finish_turn: END,
     }
   )
-  .addEdge("web_search_tool", "chatbot_agent");
+  .addEdge("tools", "chatbot_agent");
 
 // In-memory checkpointer to persist conversation history across turns by thread_id
 export const checkpointer = new MemorySaver();

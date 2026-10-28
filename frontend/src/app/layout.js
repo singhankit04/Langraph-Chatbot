@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "HelpOS — AI Knowledge Management & Enterprise Search Platform",
-  description: "Find answers across your entire company. Connect every document, conversation, and workflow into one intelligent workspace with LangGraph RAG.",
+  title: "EideticAI — AI Knowledge Management & Enterprise Search Platform",
+  description: "Find answers across your entire company. Connect every document, conversation, and workflow into one intelligent workspace with EideticAI.",
 };
 
 export default function RootLayout({ children }) {
