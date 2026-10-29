@@ -4,111 +4,84 @@ EideticAI is an enterprise-grade AI knowledge management and search platform. Bu
 
 ---
 
-## 🏗️ System Architecture
+## 🔄 Request & Response Flow
+
+EideticAI follows a streamlined request-response architecture. User requests are handled through the frontend, processed by the Express backend, and orchestrated by the LangGraph agent to intelligently retrieve context, query vector storage, or search the web before responding.
 
 ```mermaid
-flowchart TB
-    subgraph Client["Frontend Client (Next.js 16)"]
-        UI["Modern Ambient UI / Canvas"]
-        SearchInput["Search Bar / Chip Prompts"]
-        PDFUpload["PDF Drag & Drop Uploader"]
-        SessionGen["UUID Conversation Generator"]
+flowchart TD
+    subgraph ClientLayer["🖥️ Frontend Client"]
+        User(["👤 User"])
+        UI["Chat Interface (Next.js 16)"]
     end
 
-    subgraph Proxy["Next.js Rewrite Proxy"]
-        Rewrite["/api/:path* ──> process.env.BACKEND_URL"]
+    subgraph ServerLayer["⚙️ Backend API"]
+        API["Express Server (:5000)"]
     end
 
-    subgraph Backend["Express 5 Backend (:5000)"]
-        Router["Express Router (/api/chat, /api/health)"]
-        AuthConv["extractConversationId() Helper"]
-        Ingest["PDF Parsing & Chunking Engine\n(pdf-parse + RecursiveCharacterTextSplitter)"]
+    subgraph AgentLayer["🧠 AI Agent Workflow (LangGraph)"]
+        Agent["AI Agent Router"]
+        Memory[("Session Memory")]
+        VectorDB[("Qdrant Vector DB")]
+        WebSearch["Tavily Web Search"]
+        LLM["LLM Fallback Chain<br/>(Groq / Gemini / OpenRouter)"]
     end
 
-    subgraph AgenticGraph["LangGraph Workflow (StateGraph)"]
-        AgentNode["Chatbot Agent Node (LLM Router)"]
-        Decision{"routeAgentDecision\nTool Calls Requested?"}
-        DocTool["search_uploaded_documents\n(Qdrant RAG Tool)"]
-        WebTool["tavily_search\n(Live Web Tool)"]
-        Checkpointer[("MemorySaver Checkpointer\nthread_id = conversationId")]
-    end
+    %% 1. Request Flow
+    User -->|"1. Submits prompt or PDF"| UI
+    UI -->|"2. Sends API request"| API
+    API -->|"3. Dispatches message with Session ID"| Agent
 
-    subgraph External["External Services & Datastores"]
-        Qdrant[("Qdrant Cloud Vector DB\n(rag_documents)")]
-        LLMFallback["LLM Fallback Chain:\n1. Groq (openai/gpt-oss-120b)\n2. Gemini (gemini-2.5-flash)\n3. OpenRouter (nvidia/nemotron)"]
-        Redis[("Redis / BullMQ\nBackground Tasks")]
-        Tavily["Tavily Search API"]
-    end
+    %% 2. Context & Tool Retrieval
+    Agent -->|"Load session history"| Memory
+    Agent -->|"Retrieve document chunks (RAG)"| VectorDB
+    Agent -->|"Fetch live data"| WebSearch
+    Agent -->|"Prompt + retrieved context"| LLM
+    LLM -->|"Return generated answer"| Agent
 
-    UI --> Rewrite
-    SearchInput --> Rewrite
-    PDFUpload --> Rewrite
-    SessionGen -.->|Passes conversationId| SearchInput
-
-    Rewrite --> Router
-    Router --> AuthConv
-    AuthConv --> Ingest
-    AuthConv --> AgentNode
-
-    Ingest -->|Embeddings + metadata.conversationId| Qdrant
-
-    AgentNode <--> Checkpointer
-    AgentNode --> Decision
-    Decision -->|search_uploaded_documents| DocTool
-    Decision -->|tavily_search| WebTool
-    Decision -->|No tools needed (Chat / Memory)| EndNode["Return Response"]
-
-    DocTool -->|Filtered by thread_id| Qdrant
-    WebTool --> Tavily
-    AgentNode <--> LLMFallback
+    %% 3. Response Flow
+    Agent -->|"4. Return response with citations"| API
+    API -->|"5. Send JSON response"| UI
+    UI -->|"6. Render answer & sources"| User
 ```
 
 ---
 
-## 🔄 Agentic RAG Decision Workflow (Method 3)
+## ⚡ Agentic Decision Workflow
 
-Instead of running an expensive vector search on every question, EideticAI uses **Agentic RAG**. The LLM autonomously inspects user intent and decides whether to query documents, search the web, or answer directly from memory.
+Instead of running an expensive vector search on every question, the AI agent dynamically inspects user intent and decides whether to query uploaded documents, search the live web, or respond directly from memory.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as User / Frontend
-    participant API as Backend (chatHandler)
-    participant Graph as LangGraph Agent (ChatbotNode)
-    participant Mem as MemorySaver Checkpointer
-    participant DocTool as Document Tool (search_uploaded_documents)
-    participant Qdrant as Qdrant Vector Store
-    participant LLM as LLM Fallback Chain
+    actor User as User
+    participant UI as Frontend (Next.js)
+    participant API as Backend (Express)
+    participant Agent as AI Agent (LangGraph)
+    participant Services as Memory & Vector Store
+    participant LLM as LLM (Groq / Gemini)
 
-    User->>API: POST /api/chat/:conversationId { message }
-    API->>Graph: invoke({ messages }, { configurable: { thread_id } })
-    Graph->>Mem: Load previous conversation state for thread_id
-    Mem-->>Graph: [Prior Human & AI Messages]
-    Graph->>LLM: Evaluate user query + history + tool schemas
+    User->>UI: Submits question or uploads PDF
+    UI->>API: HTTP Request with Session ID
+    API->>Agent: Process message
+    Agent->>Services: Load conversation history
 
-    alt Normal Chat / Logic / General Knowledge
-        LLM-->>Graph: Direct answer (No tool calls)
-        Graph->>Mem: Save HumanMessage & AIMessage to thread_id
-        Graph-->>API: Response with answer, sources: []
-        API-->>User: { answer, sources: [], conversationId }
-
-    else Question refers to uploaded document (RAG)
-        LLM-->>Graph: Tool Call: search_uploaded_documents(query)
-        Graph->>DocTool: execute with config.configurable.thread_id
-        DocTool->>Qdrant: similaritySearch(query, top_k=4, filter: thread_id)
-        Qdrant-->>DocTool: [Relevant Document Chunks + Pages]
-        DocTool-->>Graph: ToolMessage with Content & Citation Artifacts
-        Graph->>LLM: Synthesize grounded response from chunks
-        LLM-->>Graph: Grounded AIMessage with citations
-        Graph->>Mem: Save all turns & tool messages to thread_id
-        Graph-->>API: Response with answer + extracted sources
-        API-->>User: { answer, sources: [{source, page}], conversationId }
-
-    else Real-time / Current World Data
-        LLM-->>Graph: Tool Call: tavily_search(query)
-        Graph-->>API: Response with live web findings
-        API-->>User: { answer, sources: [], conversationId }
+    alt General Conversation
+        Agent->>LLM: Send query and chat history
+        LLM-->>Agent: Direct answer
+    else Uploaded Document Query (RAG)
+        Agent->>Services: Search matching document chunks
+        Services-->>Agent: Relevant text chunks & page numbers
+        Agent->>LLM: Synthesize grounded response
+        LLM-->>Agent: Answer with citations
+    else Live Web Search
+        Agent->>LLM: Perform web search for current information
+        LLM-->>Agent: Real-time answer
     end
+
+    Agent-->>API: Formatted response with citations
+    API-->>UI: JSON Response
+    UI-->>User: Render formatted answer & source links
 ```
 
 ---
