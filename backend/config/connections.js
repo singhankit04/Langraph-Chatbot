@@ -27,6 +27,9 @@ export const redis = new Redis(process.env.REDIS_URL, {
 
 redis.on("error", (err) => console.warn(`[Redis Warning] ${err.message}`));
 
+
+
+
 // Verify active connections to Redis and Qdrant
 export async function checkConnections() {
   console.log("[Connections] Checking external services...");

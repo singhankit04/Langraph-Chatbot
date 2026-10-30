@@ -37,7 +37,11 @@ app.use(express.urlencoded({ extended: true }));
 
 // Health & Status Routes
 app.get("/", (req, res) => res.json({ status: "ok", app: "eideticai" }));
-app.get("/api/health", (req, res) => res.json({ app: "eideticai", status: "healthy", uptime: process.uptime() }));
+app.get("/api/health", (req, res) => {
+  res.json({ app: "eideticai", status: "healthy", uptime: process.uptime() })
+})
+ 
+
 
 // Chat & Conversation Routes
 app.post("/api/chat/:conversationId", chatHandler);
@@ -49,6 +53,36 @@ app.delete("/api/chat/:conversationId", clearConversationHandler);
 // PDF Ingestion Routes
 app.post("/api/chat/:conversationId/upload", upload.single("pdf"), uploadPdfHandler);
 app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
+
+
+
+// DLQ Admin Authentication Middleware
+app.use("/api/jobs/dlq", (req, res, next) => {
+  const expectedAdmin = process.env.ADMIN;
+  const expectedPassword = process.env.PASSWORD;
+
+  // Fail-closed if credentials are not configured in .env
+  if (!expectedAdmin || !expectedPassword) {
+    return res.status(500).json({ error: "Admin credentials are not configured on the server." });
+  }
+
+  // 1. Check req.body (for POST / DELETE)
+  // 2. Fallback to headers or query (for GET requests)
+  const admin = req.body?.admin || req.headers?.["admin"] || req.query?.admin;
+  const password = req.body?.password || req.headers?.["password"] || req.query?.password;
+
+  if (!admin || !password) {
+    return res.status(401).json({
+      error: "Authentication required. Provide 'admin' and 'password' in request body or headers.",
+    });
+  }
+
+  if (admin !== expectedAdmin || password !== expectedPassword) {
+    return res.status(403).json({ error: "Access denied: Invalid admin username or password." });
+  }
+
+  next();
+});
 
 // Background Job & DLQ Routes
 app.get("/api/jobs/dlq", getDlqJobsHandler);
