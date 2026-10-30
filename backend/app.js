@@ -6,12 +6,17 @@ import {
   uploadPdfHandler,
   getConversationHistoryHandler,
   clearConversationHandler,
+  getJobStatusHandler,
+  getDlqJobsHandler,
+  getDlqJobDetailsHandler,
+  retryDlqJobHandler,
+  removeDlqJobHandler,
+  clearDlqHandler,
 } from "./controllers/chatController.js";
 
 const app = express();
 
-// Strict CORS configuration reading allowed frontend origins from process.env.FRONTEND_URL
-const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:3000")
+const allowedOrigins = (process.env.ALLOWED_URLS)
   .split(",")
   .map((origin) => origin.trim().replace(/\/+$/, ""))
   .filter(Boolean);
@@ -19,17 +24,10 @@ const allowedOrigins = (process.env.FRONTEND_URL || "http://localhost:3000")
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. server-to-server, curl)
-      if (!origin) return callback(null, true);
-
-      const normalizedOrigin = origin.trim().replace(/\/+$/, "");
-      if (allowedOrigins.includes(normalizedOrigin)) {
+      if (!origin || allowedOrigins.includes(origin.trim().replace(/\/+$/, ""))) {
         return callback(null, true);
       }
-
-      return callback(
-        new Error(`CORS policy violation: Origin "${origin}" is not allowed.`)
-      );
+      return callback(new Error(`CORS violation: Origin "${origin}" not allowed.`));
     },
     credentials: true,
   })
@@ -37,52 +35,34 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- Health & Status Routes ---
-app.get("/", (req, res) => {
-  res.json({
-    status: "ok",
-    app: "eideticai",
-    message: "EideticAI Backend API is active",
-  });
-});
+// Health & Status Routes
+app.get("/", (req, res) => res.json({ status: "ok", app: "eideticai" }));
+app.get("/api/health", (req, res) => res.json({ app: "eideticai", status: "healthy", uptime: process.uptime() }));
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    app: "eideticai",
-    status: "healthy",
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// --- Conversation Endpoints (MemorySaver with thread_id = conversationId) ---
-
-// 1. Post message to conversation (invokes LangGraph agent with thread_id = conversationId)
+// Chat & Conversation Routes
 app.post("/api/chat/:conversationId", chatHandler);
 app.post("/api/chat", chatHandler);
-
-// 2. Retrieve conversation history from MemorySaver
 app.get("/api/chat/:conversationId/history", getConversationHistoryHandler);
 app.get("/api/chat/:conversationId", getConversationHistoryHandler);
-
-// 3. Clear conversation thread memory
 app.delete("/api/chat/:conversationId", clearConversationHandler);
 
-// 4. Upload PDF into a conversation session (chunks tagged with conversationId in Qdrant)
+// PDF Ingestion Routes
 app.post("/api/chat/:conversationId/upload", upload.single("pdf"), uploadPdfHandler);
 app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
 
-// 404 Route Handler
-app.use((req, res) => {
-  res.status(404).json({ error: `Route not found: ${req.method} ${req.originalUrl}` });
-});
+// Background Job & DLQ Routes
+app.get("/api/jobs/dlq", getDlqJobsHandler);
+app.delete("/api/jobs/dlq", clearDlqHandler);
+app.get("/api/jobs/dlq/:jobId", getDlqJobDetailsHandler);
+app.post("/api/jobs/dlq/:jobId/retry", retryDlqJobHandler);
+app.delete("/api/jobs/dlq/:jobId", removeDlqJobHandler);
+app.get("/api/jobs/:jobId", getJobStatusHandler);
 
-// Global Error Handling Middleware
+// 404 & Error Handlers
+app.use((req, res) => res.status(404).json({ error: `Not found: ${req.method} ${req.originalUrl}` }));
 app.use((err, req, res, next) => {
   console.error("API Error:", err);
-  res.status(err.status || 500).json({
-    error: err.message || "Internal Server Error",
-  });
+  res.status(err.status || 500).json({ error: err.message || "Internal Server Error" });
 });
 
 export default app;

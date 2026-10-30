@@ -1,23 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { PDFParse } from "pdf-parse";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import { QdrantVectorStore } from "@langchain/qdrant";
 import { HumanMessage } from "@langchain/core/messages";
-import { embeddings } from "../models/embeddings.js";
 import { chatbotApp, checkpointer } from "../chatbot/graph.js";
-import { getQdrantVectorStore, DEFAULT_COLLECTION_NAME } from "../config/connections.js";
+import { addPdfProcessingJob, getJobStatus, getQueueEvents } from "../background_jobs/queue.js";
+import { getDlqJobs, getDlqJob, retryDlqJob, removeDlqJob, clearDlq, getDlqStats } from "../background_jobs/dlq.js";
 
-// ============================================================================
-// Helper: Resolve Conversation ID / Thread ID from Client Request
-// ============================================================================
-
-/**
- * Extracts conversationId / threadId from URL params, body, query, or headers.
- * If not supplied by frontend, generates a random UUID.
- *
- * @param {import("express").Request} req
- * @returns {string} Valid conversationId (thread_id for MemorySaver)
- */
+// Extract conversationId / threadId from request
 export function extractConversationId(req) {
   const candidate =
     req.params?.conversationId ||
@@ -25,74 +12,56 @@ export function extractConversationId(req) {
     req.body?.conversationId ||
     req.body?.conversation_id ||
     req.body?.threadId ||
-    req.body?.thread_id ||
     req.body?.chatId ||
     req.headers?.["x-conversation-id"] ||
     req.headers?.["x-chat-id"] ||
     req.query?.conversationId ||
     req.query?.chatId;
 
-  return candidate && String(candidate).trim()
-    ? String(candidate).trim()
-    : randomUUID();
+  return candidate && String(candidate).trim() ? String(candidate).trim() : randomUUID();
 }
 
-// ============================================================================
-// Unified Chat Controller (Session-Isolated by conversationId / threadId)
-// ============================================================================
-
-/**
- * Upload & Index PDF for a specific chat conversation (POST /api/chat/:conversationId/upload)
- * Chunks the PDF and tags every chunk with metadata: { conversationId, chatId, source, page }
- */
+// Upload & enqueue PDF for background processing
 export async function uploadPdfHandler(req, res) {
   try {
     const conversationId = extractConversationId(req);
-
     if (!req.file) {
       return res.status(400).json({ error: "No PDF file uploaded. Use the form-data key 'pdf'." });
     }
 
-    // 1. Extract text from PDF buffer
-    const parser = new PDFParse({ data: new Uint8Array(req.file.buffer) });
-    const parsed = await parser.getText();
-    await parser.destroy();
+    const job = await addPdfProcessingJob({
+      filePath: req.file.path,
+      originalName: req.file.originalname,
+      fileSize: req.file.size,
+      conversationId,
+    });
 
-    const validPages = (parsed.pages || []).filter((p) => p.text?.trim());
-    if (!validPages.length) {
-      return res.status(400).json({
-        error: `Failed to extract text or PDF is empty: "${req.file.originalname}"`,
-      });
-    }
-
-    // 2. Split into overlapping chunks with conversationId & chatId metadata
-    const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 1000, chunkOverlap: 200 });
-    const docs = await splitter.createDocuments(
-      validPages.map((p) => p.text),
-      validPages.map((p) => ({
-        source: req.file.originalname,
-        page: p.num,
+    // Synchronous wait if ?wait=true
+    if (req.query.wait === "true" || req.query.sync === "true") {
+      const result = await job.waitUntilFinished(getQueueEvents(), 120000);
+      return res.json({
+        message: `Successfully indexed "${req.file.originalname}" for conversation!`,
         conversationId,
         chatId: conversationId,
         threadId: conversationId,
-      }))
-    );
+        source: req.file.originalname,
+        pagesCount: result?.pagesCount || 1,
+        chunksCount: result?.chunksCount || 0,
+        jobId: job.id,
+      });
+    }
 
-    // 3. Store into Qdrant vector database
-    await QdrantVectorStore.fromDocuments(docs, embeddings, {
-      url: process.env.QDRANT_URL,
-      apiKey: process.env.QDRANT_API_KEY,
-      collectionName: DEFAULT_COLLECTION_NAME,
-    });
-
-    return res.json({
-      message: `Successfully indexed "${req.file.originalname}" for conversation!`,
+    // 202 Accepted background queue response
+    return res.status(202).json({
+      message: `Upload accepted. Processing "${req.file.originalname}" in the background.`,
+      status: "queued",
+      jobId: job.id,
       conversationId,
       chatId: conversationId,
       threadId: conversationId,
       source: req.file.originalname,
-      pagesCount: validPages.length,
-      chunksCount: docs.length,
+      fileSize: req.file.size,
+      pagesCount: 1,
     });
   } catch (err) {
     console.error("Upload handler error:", err);
@@ -100,13 +69,65 @@ export async function uploadPdfHandler(req, res) {
   }
 }
 
-/**
- * Sanitizes model responses to eliminate raw markdown pipe tables and excessive asterisks,
- * transforming tables into clean, readable structured bullet points.
- *
- * @param {string} text
- * @returns {string}
- */
+// Job status endpoint
+export async function getJobStatusHandler(req, res) {
+  try {
+    const status = await getJobStatus(req.params.jobId);
+    if (!status) return res.status(404).json({ error: `Job "${req.params.jobId}" not found.` });
+    return res.json(status);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// DLQ management endpoints
+export async function getDlqJobsHandler(req, res) {
+  try {
+    const [stats, jobs] = await Promise.all([getDlqStats(), getDlqJobs()]);
+    return res.json({ stats, jobs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getDlqJobDetailsHandler(req, res) {
+  try {
+    const job = await getDlqJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: `DLQ record "${req.params.jobId}" not found.` });
+    return res.json(job);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+export async function retryDlqJobHandler(req, res) {
+  try {
+    const result = await retryDlqJob(req.params.jobId);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+export async function removeDlqJobHandler(req, res) {
+  try {
+    const result = await removeDlqJob(req.params.jobId);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+export async function clearDlqHandler(req, res) {
+  try {
+    const result = await clearDlq();
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// Sanitize tables and excessive asterisks in LLM response
 export function cleanStructuredOutput(text) {
   if (!text || typeof text !== "string") return text || "";
 
@@ -118,19 +139,19 @@ export function cleanStructuredOutput(text) {
     const rawLine = lines[i];
     const trimmed = rawLine.trim();
 
-    // 1. Skip markdown table delimiter row, e.g. |---|---| or |:---|:---|
+    // Skip table delimiter row |---|---|
     if (/^\|?(\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?$/.test(trimmed)) {
       inTable = true;
       continue;
     }
 
-    // 2. Clean heading lines that are entirely wrapped in ** (e.g. **Heading**)
+    // Clean headings wrapped in **
     if (/^\*\*[^*]+\*\*$/.test(trimmed)) {
       cleaned.push(trimmed.slice(2, -2).trim());
       continue;
     }
 
-    // 3. Transform pipe table rows into clean bullet points
+    // Convert pipe tables to clean bullet points
     if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
       const cells = trimmed
         .slice(1, -1)
@@ -140,56 +161,35 @@ export function cleanStructuredOutput(text) {
 
       if (cells.length === 0) continue;
 
-      // Skip header row if it contains generic table column titles
       const lowerFirst = cells[0].toLowerCase();
-      if (!inTable && (lowerFirst === "section" || lowerFirst === "topic" || lowerFirst === "field" || lowerFirst === "category" || lowerFirst === "item")) {
+      if (!inTable && ["section", "topic", "field", "category", "item"].includes(lowerFirst)) {
         inTable = true;
         continue;
       }
 
       inTable = true;
-      if (cells.length >= 2) {
-        const title = cells[0];
-        const description = cells.slice(1).join(" — ");
-        cleaned.push(`• ${title}: ${description}`);
-      } else {
-        cleaned.push(`• ${cells[0]}`);
-      }
+      cleaned.push(cells.length >= 2 ? `• ${cells[0]}: ${cells.slice(1).join(" — ")}` : `• ${cells[0]}`);
       continue;
     } else {
       inTable = false;
     }
 
-    // 3. Clean up lines with isolated pipes
-    let line = rawLine;
-    if (line.includes("|")) {
-      line = line.replace(/\s*\|\s*/g, " — ");
-    }
-
-    // 4. Clean up redundant quadrupled asterisks ****
-    line = line.replace(/\*{3,}/g, "**");
-
-    cleaned.push(line);
+    cleaned.push(
+      rawLine.includes("|") ? rawLine.replace(/\s*\|\s*/g, " — ").replace(/\*{3,}/g, "**") : rawLine.replace(/\*{3,}/g, "**")
+    );
   }
 
   return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/**
- * Handle user messages for a specific conversation session (POST /api/chat/:conversationId or POST /api/chat)
- * Invokes the LangGraph Agentic RAG workflow with session MemorySaver (thread_id = conversationId).
- * The agent autonomously decides whether to answer directly (normal chat), search uploaded documents (PDF RAG),
- * or perform web search.
- */
+// Handle chat messages with LangGraph agent
 export async function chatHandler(req, res) {
   try {
     const conversationId = extractConversationId(req);
     const rawQuestion =
       req.body?.message ||
       req.body?.question ||
-      (Array.isArray(req.body?.messages)
-        ? req.body.messages[req.body.messages.length - 1]?.content
-        : undefined);
+      (Array.isArray(req.body?.messages) ? req.body.messages[req.body.messages.length - 1]?.content : undefined);
 
     if (!rawQuestion || !String(rawQuestion).trim()) {
       return res.status(400).json({ error: "A valid 'message' or 'question' field is required." });
@@ -197,7 +197,6 @@ export async function chatHandler(req, res) {
 
     const question = String(rawQuestion).trim();
 
-    // 1. Invoke LangGraph agent with MemorySaver thread_id set to conversationId
     const response = await chatbotApp.invoke(
       { messages: [new HumanMessage(question)] },
       { configurable: { thread_id: conversationId } }
@@ -205,33 +204,22 @@ export async function chatHandler(req, res) {
 
     const messages = response.messages || [];
     const lastMessage = messages[messages.length - 1];
-    const rawAnswer = lastMessage?.content || "No response generated.";
-    const answer = cleanStructuredOutput(rawAnswer);
+    const answer = cleanStructuredOutput(lastMessage?.content || "No response generated.");
 
-    // 2. Extract citations / sources ONLY from tool messages executed during THIS current turn
+    // Extract citations from the current turn
     const sources = [];
     const seen = new Set();
-
-    // Identify the start of the current turn (the last HumanMessage submitted)
     let currentTurnStartIndex = -1;
+
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
-      const isHuman =
-        m._getType?.() === "human" ||
-        m.constructor?.name === "HumanMessage" ||
-        m.role === "human" ||
-        m.type === "human";
-      if (isHuman) {
+      if (m._getType?.() === "human" || m.constructor?.name === "HumanMessage" || m.role === "human" || m.type === "human") {
         currentTurnStartIndex = i;
         break;
       }
     }
 
-    // Only inspect tool messages produced during this current turn
-    const currentTurnMessages =
-      currentTurnStartIndex !== -1
-        ? messages.slice(currentTurnStartIndex + 1)
-        : [lastMessage];
+    const currentTurnMessages = currentTurnStartIndex !== -1 ? messages.slice(currentTurnStartIndex + 1) : [lastMessage];
 
     for (const msg of currentTurnMessages) {
       if (msg.name === "search_uploaded_documents" && Array.isArray(msg.artifact)) {
@@ -245,68 +233,41 @@ export async function chatHandler(req, res) {
       }
     }
 
-    return res.json({
-      answer,
-      sources,
-      conversationId,
-      chatId: conversationId,
-      threadId: conversationId,
-    });
+    return res.json({ answer, sources, conversationId, chatId: conversationId, threadId: conversationId });
   } catch (err) {
     console.error("Chat handler error:", err);
     return res.status(500).json({ error: err.message || "Failed to process chat message." });
   }
 }
 
-/**
- * Retrieve saved conversation history from MemorySaver for a given conversationId
- * GET /api/chat/:conversationId/history or GET /api/chat/:conversationId
- */
+// Retrieve message history from MemorySaver
 export async function getConversationHistoryHandler(req, res) {
   try {
     const conversationId = extractConversationId(req);
-    const state = await chatbotApp.getState({
-      configurable: { thread_id: conversationId },
-    });
+    const state = await chatbotApp.getState({ configurable: { thread_id: conversationId } });
 
-    const rawMessages = state?.values?.messages || [];
-    const messages = rawMessages.map((msg) => ({
+    const messages = (state?.values?.messages || []).map((msg) => ({
       role: msg._getType?.() || (msg.constructor?.name === "HumanMessage" ? "human" : "ai"),
       content: msg.content,
       name: msg.name,
       id: msg.id,
     }));
 
-    return res.json({
-      conversationId,
-      chatId: conversationId,
-      threadId: conversationId,
-      messages,
-      total: messages.length,
-    });
+    return res.json({ conversationId, chatId: conversationId, threadId: conversationId, messages, total: messages.length });
   } catch (err) {
     console.error("Get conversation history error:", err);
     return res.status(500).json({ error: err.message || "Failed to fetch conversation history." });
   }
 }
 
-/**
- * Clears MemorySaver state checkpoint for this conversationId / thread_id
- * DELETE /api/chat/:conversationId
- */
+// Clear MemorySaver state for conversation
 export async function clearConversationHandler(req, res) {
   try {
     const conversationId = extractConversationId(req);
     if (checkpointer && typeof checkpointer.deleteThread === "function") {
       await checkpointer.deleteThread(conversationId);
     }
-
-    return res.json({
-      message: `Memory checkpoint deleted for conversationId / thread_id "${conversationId}".`,
-      conversationId,
-      chatId: conversationId,
-      threadId: conversationId,
-    });
+    return res.json({ message: `Memory checkpoint deleted for "${conversationId}".`, conversationId, chatId: conversationId });
   } catch (err) {
     console.error("Clear conversation error:", err);
     return res.status(500).json({ error: err.message || "Failed to clear conversation memory." });

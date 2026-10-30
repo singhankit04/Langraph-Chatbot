@@ -4,17 +4,13 @@ import Redis from "ioredis";
 import { embeddings } from "../models/embeddings.js";
 import "dotenv/config";
 
-// ============================================================================
-// 1. QDRANT VECTOR DATABASE CONNECTION
-// ============================================================================
-export const DEFAULT_COLLECTION_NAME = process.env.QDRANT_COLLECTION || "rag_documents";
-
+// Qdrant Vector Client & Vector Store
 export const qdrantClient = new QdrantClient({
   url: process.env.QDRANT_URL,
   apiKey: process.env.QDRANT_API_KEY,
 });
 
-export async function getQdrantVectorStore(collectionName = DEFAULT_COLLECTION_NAME) {
+export async function getQdrantVectorStore(collectionName = "rag_documents") {
   return QdrantVectorStore.fromExistingCollection(embeddings, {
     url: process.env.QDRANT_URL,
     apiKey: process.env.QDRANT_API_KEY,
@@ -22,70 +18,48 @@ export async function getQdrantVectorStore(collectionName = DEFAULT_COLLECTION_N
   });
 }
 
-// ============================================================================
-// 2. REDIS CONNECTION (BullMQ Message Broker)
-// ============================================================================
+// Redis client for BullMQ and cache
 export const redis = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
   lazyConnect: true,
 });
 
-redis.on("error", (err) => {
-  console.warn(`[Redis Connection Warning] ${err.message}`);
-});
+redis.on("error", (err) => console.warn(`[Redis Warning] ${err.message}`));
 
-export const redisConnection = redis;
-
-// ============================================================================
-// 3. CONNECTION VERIFICATION
-// ============================================================================
-/**
- * Verifies active connections to Redis and Qdrant.
- */
+// Verify active connections to Redis and Qdrant
 export async function checkConnections() {
-  console.log("🔍 Checking external service connections...");
+  console.log("[Connections] Checking external services...");
 
-  // 1. Check Redis
+  // 1. Redis check
   try {
     if (redis.status === "wait") await redis.connect();
-    const pong = await redis.ping();
-    if (pong === "PONG") {
-      console.log("  ✅ Redis: Connected successfully");
-    }
+    if ((await redis.ping()) === "PONG") console.log("[Connections] Redis: Connected");
   } catch (err) {
-    console.error(`  ❌ Redis: Connection failed (${err.message})`);
+    console.error(`[Connections] Redis: Connection failed (${err.message})`);
   }
 
-  // 2. Check Qdrant & ensure chatId payload index
+  // 2. Qdrant check & index verification
   try {
     const response = await qdrantClient.getCollections();
     const names = (response.collections || []).map((c) => c.name);
-    console.log(`  ✅ Qdrant: Connected successfully (collections: [${names.join(", ")}])`);
+    console.log(`[Connections] Qdrant: Connected (collections: [${names.join(", ")}])`);
 
-    // Ensure metadata.chatId and metadata.conversationId payload indices exist for session-isolated filtering
-    if (names.includes(DEFAULT_COLLECTION_NAME)) {
-      try {
-        await qdrantClient.createPayloadIndex(DEFAULT_COLLECTION_NAME, {
-          field_name: "metadata.chatId",
-          field_schema: "keyword",
-        });
-        console.log(`  ✅ Qdrant: "metadata.chatId" keyword index verified`);
-      } catch (idxErr) {
-        // Ignore if index already exists
+    if (names.includes("rag_documents")) {
+      const info = await qdrantClient.getCollection("rag_documents");
+      const currentDim = info.config?.params?.vectors?.size;
+      if (currentDim !== 1024) {
+        console.log(`[Connections] Qdrant: Migrating "rag_documents" from ${currentDim} to 1024 dimensions...`);
+        await qdrantClient.deleteCollection("rag_documents");
+        await qdrantClient.createCollection("rag_documents", { vectors: { size: 1024, distance: "Cosine" } });
       }
-
-      try {
-        await qdrantClient.createPayloadIndex(DEFAULT_COLLECTION_NAME, {
-          field_name: "metadata.conversationId",
-          field_schema: "keyword",
-        });
-        console.log(`  ✅ Qdrant: "metadata.conversationId" keyword index verified`);
-      } catch (idxErr) {
-        // Ignore if index already exists
-      }
+    } else {
+      await qdrantClient.createCollection("rag_documents", { vectors: { size: 1024, distance: "Cosine" } });
     }
+
+    await qdrantClient.createPayloadIndex("rag_documents", { field_name: "metadata.chatId", field_schema: "keyword" }).catch(() => {});
+    await qdrantClient.createPayloadIndex("rag_documents", { field_name: "metadata.conversationId", field_schema: "keyword" }).catch(() => {});
   } catch (err) {
-    console.error(`  ❌ Qdrant: Connection failed (${err.message})`);
+    console.error(`[Connections] Qdrant: Connection failed (${err.message})`);
   }
 }

@@ -1,30 +1,24 @@
 import app from "./app.js";
 import { checkConnections } from "./config/connections.js";
+import { startPdfWorker, stopPdfWorker } from "./background_jobs/worker.js";
+import { startKeepAliveCron, stopKeepAliveCron } from "./cronjob/keepAlive.js";
 import "dotenv/config";
 
 const PORT = process.env.PORT || 5000;
 
-// Start HTTP Server and verify connections
 const server = app.listen(PORT, async () => {
-  console.log(`\n========================================`);
-  console.log(`🚀 Server listening on http://localhost:${PORT}`);
+  console.log(`[Server] Listening on http://localhost:${PORT}`);
   await checkConnections();
-  console.log(`========================================\n`);
+  startPdfWorker();
+  startKeepAliveCron();
 });
 
-// Graceful Shutdown
-process.on("SIGINT", () => {
-  console.log("\nReceived SIGINT. Shutting down gracefully...");
-  server.close(() => {
-    console.log("Server closed.");
-    process.exit(0);
-  });
-});
+async function shutdown() {
+  console.log("Shutting down gracefully...");
+  stopKeepAliveCron();
+  await stopPdfWorker();
+  server.close(() => process.exit(0));
+}
 
-process.on("SIGTERM", () => {
-  console.log("\nReceived SIGTERM. Shutting down gracefully...");
-  server.close(() => {
-    console.log("Server closed.");
-    process.exit(0);
-  });
-});
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

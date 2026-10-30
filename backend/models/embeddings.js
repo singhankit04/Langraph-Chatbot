@@ -1,13 +1,13 @@
-import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
+import { OpenAIEmbeddings } from "@langchain/openai";
 import "dotenv/config";
 
-/**
- * Google Generative AI Embeddings (gemini-embedding-2, 1536 dimensions)
- */
-export const embeddings = new GoogleGenerativeAIEmbeddings({
-  apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
-  model: "gemini-embedding-2",
-  config: { outputDimensionality: 1536 },
+// Liquid LFM embedding model (1024 dimensions via OpenRouter)
+export const embeddings = new OpenAIEmbeddings({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  model: "liquid/lfm-2.5-embedding-350m:free",
+  configuration: {
+    baseURL: "https://openrouter.ai/api/v1",
+  },
 });
 
 export default embeddings;

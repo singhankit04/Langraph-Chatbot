@@ -3,15 +3,8 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenRouter } from "@langchain/openrouter";
 import "dotenv/config";
 
-/**
- * Creates an LLM instance with automated fallback providers (Groq -> Gemini -> OpenRouter).
- *
- * @param {object} [options={}]
- * @param {number} [options.temperature=0.7] - Model temperature (0.7 for chat, 0.0 for strict RAG)
- * @param {Array} [options.tools=[]] - Optional tools to bind to all models
- * @returns {Runnable}
- */
-export function createLlm({ temperature = 0.7, tools = [] } = {}) {
+// Creates primary LLM (Groq) with fallback providers (Gemini -> OpenRouter)
+export function getChatModelWithFallbacks(tools = [], temperature = 0.7) {
   const primary = new ChatGroq({
     apiKey: process.env.GROQ_API_KEY,
     model: "openai/gpt-oss-120b",
@@ -40,13 +33,4 @@ export function createLlm({ temperature = 0.7, tools = [] } = {}) {
   return primary.withFallbacks({ fallbacks });
 }
 
-// 1. Conversational model (temperature 0.7) for agent & general chat
-export const chatModel = createLlm({ temperature: 0.7 });
-
-// 2. Strict model (temperature 0.0) for context-grounded RAG answers
-export const embeddingChatModel = createLlm({ temperature: 0.0 });
-
-// Helper / backwards-compatibility
-export const getChatModelWithFallbacks = (tools = []) => createLlm({ temperature: 0.7, tools });
-
-export default chatModel;
+export default getChatModelWithFallbacks;

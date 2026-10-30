@@ -2,10 +2,9 @@ import { StateGraph, MessagesAnnotation, START, END, MemorySaver } from "@langch
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { SystemMessage } from "@langchain/core/messages";
 import { getChatModelWithFallbacks } from "../models/llm.js";
-import { tools } from "../utils/tools.js";
+import { tools } from "./tools.js";
 import "dotenv/config";
 
-// Bind configured tools (e.g. Tavily search) to LLM with fallback chain (Groq -> Gemini -> OpenRouter)
 const llm = getChatModelWithFallbacks(tools);
 
 const defaultSystemMessage = new SystemMessage(
@@ -26,46 +25,27 @@ const defaultSystemMessage = new SystemMessage(
 );
 
 async function chatbotAgentNode(state) {
-  const hasSystemMessage = state.messages.length > 0 && state.messages[0]._getType?.() === "system";
-  const messagesToSend = hasSystemMessage
-    ? state.messages
-    : [defaultSystemMessage, ...state.messages];
-
+  const hasSystem = state.messages.length > 0 && state.messages[0]._getType?.() === "system";
+  const messagesToSend = hasSystem ? state.messages : [defaultSystemMessage, ...state.messages];
   const response = await llm.invoke(messagesToSend);
-  // MessagesAnnotation reducer automatically appends returned messages to state history
   return { messages: [response] };
 }
 
-const toolNode = new ToolNode(tools);
-
 function routeAgentDecision(state) {
-  const lastMessage = state.messages[state.messages.length - 1];
-  // Route to tool executor if model requested tool calls, otherwise finish
-  if (lastMessage?.tool_calls?.length > 0) {
-    return "call_tools";
-  }
-  return "finish_turn";
+  const last = state.messages[state.messages.length - 1];
+  return last?.tool_calls?.length > 0 ? "call_tools" : "finish_turn";
 }
 
 const workflow = new StateGraph(MessagesAnnotation)
   .addNode("chatbot_agent", chatbotAgentNode)
-  .addNode("tools", toolNode)
+  .addNode("tools", new ToolNode(tools))
   .addEdge(START, "chatbot_agent")
-  .addConditionalEdges(
-    "chatbot_agent",
-    routeAgentDecision,
-    {
-      call_tools: "tools",
-      finish_turn: END,
-    }
-  )
+  .addConditionalEdges("chatbot_agent", routeAgentDecision, {
+    call_tools: "tools",
+    finish_turn: END,
+  })
   .addEdge("tools", "chatbot_agent");
 
-// In-memory checkpointer to persist conversation history across turns by thread_id
 export const checkpointer = new MemorySaver();
-
-export const chatbotApp = workflow.compile({
-  checkpointer,
-});
-
+export const chatbotApp = workflow.compile({ checkpointer });
 export default chatbotApp;
