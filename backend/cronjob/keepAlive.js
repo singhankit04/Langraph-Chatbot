@@ -39,7 +39,7 @@ export function startKeepAliveCron() {
   const url = getHealthUrl();
   setTimeout(() => pingHealthCheck(url).catch(() => {}), 1000);
 
-  cronTask = cron.schedule("*/14 6-21 * * *", 
+  cronTask = cron.schedule("*/14  6-21 * * *", 
     () => pingHealthCheck(url),
     {
       timezone: "Asia/Kolkata"
